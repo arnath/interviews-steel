@@ -4,6 +4,8 @@ import requests
 from fastapi import FastAPI, HTTPException, Request, Response, status
 
 app = FastAPI()
+bandwidth_usage = 0
+visited_sites = dict()
 
 # Using os.environ so this throws if these aren't set.
 username = os.environ["STEEL_USERNAME"]
@@ -12,6 +14,9 @@ password = os.environ["STEEL_PASSWORD"]
 
 @app.get("/")
 def proxy(request: Request):
+    global bandwidth_usage
+    global visited_sites
+
     check_authorization(request)
 
     target_url = request.headers["Host"]
@@ -25,7 +30,35 @@ def proxy(request: Request):
     response = requests.get(f"http://{target_url}")
     response.raise_for_status()
 
+    bandwidth_usage += int(response.headers["Content-Length"])
+    num_visits = visited_sites.get(target_url, 0)
+    visited_sites[target_url] = num_visits + 1
+
     return Response(response.text, media_type="text/html; charset=UTF-8")
+
+
+@app.get("/metrics")
+def metrics():
+    global bandwidth_usage
+    global visited_sites
+
+    # If we're below 1 MB, use KB for the bandwidth display.
+    if bandwidth_usage < 1048576:
+        bandwidth_string = f"{bandwidth_usage // 1024}KB"
+    else:
+        bandwidth_string = f"{bandwidth_usage // 1048576}MB"
+
+    return {
+        "bandwidth_usage": bandwidth_string,
+        "top_sites": [
+            {"url": key, "visits": value}
+            for key, value in sorted(
+                visited_sites.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        ][:10],
+    }
 
 
 def check_authorization(request: Request) -> None:

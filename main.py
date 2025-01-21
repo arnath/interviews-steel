@@ -1,9 +1,16 @@
 import base64
+from contextlib import asynccontextmanager
 import os
 import requests
 from fastapi import FastAPI, HTTPException, Request, Response, status
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    print(metrics())
+
+
 bandwidth_usage = 0
 visited_sites = dict()
 
@@ -11,11 +18,15 @@ visited_sites = dict()
 username = os.environ["STEEL_USERNAME"]
 password = os.environ["STEEL_PASSWORD"]
 
+app = FastAPI(lifespan=lifespan)
+
 
 @app.get("/")
 def proxy(request: Request):
     global bandwidth_usage
     global visited_sites
+
+    print(request.headers)
 
     check_authorization(request)
 
@@ -30,7 +41,8 @@ def proxy(request: Request):
     response = requests.get(f"http://{target_url}")
     response.raise_for_status()
 
-    bandwidth_usage += int(response.headers["Content-Length"])
+    content_length = int(response.headers.get("Content-Length", "0"))
+    bandwidth_usage += content_length
     num_visits = visited_sites.get(target_url, 0)
     visited_sites[target_url] = num_visits + 1
 

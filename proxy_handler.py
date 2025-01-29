@@ -1,16 +1,33 @@
 import http.client
 import http.server
 import json
+import select
+import socket
 
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    BUFFER_SIZE = 4096
+
     bandwidth_usage_bytes = 0
     visited_sites = dict[str, int]()
 
     def do_CONNECT(self):
-        pass
+        # Connect to the remote server.
+        host, port = self.path.split(":")
+        remote_socket = socket.create_connection((host, int(port)))
+
+        # Send the connection established message.
+        self.send_response_only(200, "Connection Established")
+        self.end_headers()
+
+        # Tunnel data between the servers.
+        ProxyHandler.bandwidth_usage_bytes += self._forward_data(
+            self.request, remote_socket
+        )
+        ProxyHandler.visited_sites[host] = ProxyHandler.visited_sites.get(host, 0) + 1
 
     def do_GET(self):
+        # Check for the metrics handler.
         if self.path == "/metrics":
             metrics = self._get_metrics()
             self.send_response(200)
@@ -19,6 +36,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(metrics).encode())
             return
 
+        # Otherwise, forward the call to the HTTP server and send the response back.
         host = self.headers["Host"]
         http_connection = http.client.HTTPConnection(host)
         http_connection.putrequest(self.command, self.path, skip_host=True)
@@ -39,6 +57,31 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
         ProxyHandler.bandwidth_usage_bytes += len(data)
         ProxyHandler.visited_sites[host] = ProxyHandler.visited_sites.get(host, 0) + 1
+
+    def _forward_data(
+        self, client_socket: socket.socket, remote_socket: socket.socket
+    ) -> int:
+        total_bytes = 0
+        try:
+            while True:
+                # Wait for one of the sockets to indicate as ready.
+                ready, _, _ = select.select([client_socket, remote_socket], [], [])
+                for socket in ready:
+                    data = socket.recv(ProxyHandler.BUFFER_SIZE)
+                    if not data:
+                        return total_bytes
+
+                    total_bytes += len(data)
+
+                    # Send the data to the other socket.
+                    if socket is client_socket:
+                        remote_socket.sendall(data)
+                    else:
+                        client_socket.sendall(data)
+        except Exception as e:
+            print(f"Error forwarding data: {e}")
+
+        return total_bytes
 
     def _get_metrics(self):
         top_sites = sorted(
